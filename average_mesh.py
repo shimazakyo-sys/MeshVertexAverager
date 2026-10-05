@@ -1,90 +1,193 @@
 """
-MeshVertexAverager v1.0
+MeshVertexAverager v1.1.0
 
 Average vertex positions across multiple OBJ meshes
 with identical topology and vertex order.
 
+Features:
+- Preserves quad polygons
+- Preserves n-gons
+- No automatic triangulation
+
 License: MIT
-Author: Shimazakyo
+Author: shimazakyo
 """
 
 import os
-import trimesh
 import numpy as np
-
-# ---------------------------------------------------------
-# MeshVertexAverager
-# このプログラムは「input_meshes」フォルダに入れた
-# 複数の同一トポロジーOBJメッシュを読み込み、
-# 対応する頂点座標を平均して
-# 新しい平均メッシュをoutput フォルダに生成します。
-# ---------------------------------------------------------
 
 INPUT_DIR = "input_meshes"
 OUTPUT_DIR = "output"
 OUTPUT_FILE = "average_mesh.obj"
 
-def load_meshes(input_dir):
-    """OBJ メッシュを全部読み込む"""
+
+def load_obj(path):
+    """
+    OBJ読み込み
+    頂点とface行を取得
+    """
+
+    vertices = []
+    face_lines = []
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+
+            if line.startswith("v "):
+                parts = line.strip().split()
+                vertices.append(
+                    [
+                        float(parts[1]),
+                        float(parts[2]),
+                        float(parts[3]),
+                    ]
+                )
+
+            elif line.startswith("f "):
+                face_lines.append(line.rstrip())
+
+    return np.array(vertices, dtype=np.float64), face_lines
+
+
+def load_meshes(folder):
+    """
+    OBJ群を読み込み
+    """
+
+    obj_files = sorted(
+        [
+            f
+            for f in os.listdir(folder)
+            if f.lower().endswith(".obj")
+        ]
+    )
+
+    if not obj_files:
+        return [], None
+
     meshes = []
-    for filename in os.listdir(input_dir):
-        if filename.lower().endswith(".obj"):
-            path = os.path.join(input_dir, filename)
-            mesh = trimesh.load(path, process=False)
-            meshes.append(mesh)
-            print(f"読み込み完了: {filename}")
-    return meshes
+    reference_faces = None
 
-def compute_average_mesh(meshes):
-    """複数メッシュの平均メッシュを作る"""
+    for i, filename in enumerate(obj_files):
 
-    # すべて同じ頂点数であることを確認
-    vertex_counts = [mesh.vertices.shape[0] for mesh in meshes]
+        path = os.path.join(folder, filename)
+
+        vertices, faces = load_obj(path)
+
+        if i == 0:
+            reference_faces = faces
+
+        meshes.append(vertices)
+
+        print(f"Loaded: {filename}")
+
+    return meshes, reference_faces
+
+
+def validate_meshes(meshes, reference_faces, folder):
+    """
+    同一トポロジー確認
+    """
+
+    obj_files = sorted(
+        [
+            f
+            for f in os.listdir(folder)
+            if f.lower().endswith(".obj")
+        ]
+    )
+
+    vertex_counts = [len(v) for v in meshes]
+
     if len(set(vertex_counts)) != 1:
-        raise ValueError("頂点数が一致しません。同一トポロジーかつ同一頂点順序のOBJのみを使用してください。")
+        raise ValueError(
+            "OBJの頂点数が一致していません。"
+        )
 
-    # 頂点を全部集める
-    all_vertices = np.array([mesh.vertices for mesh in meshes])
+    for filename in obj_files:
 
-    # 平均を取る（軸=0 → メッシュ間で平均）
-    avg_vertices = np.mean(all_vertices, axis=0)
+        path = os.path.join(folder, filename)
 
-    # 面（faces）はどのメッシュでも同じなので、最初のものを使う
-    faces = meshes[0].faces
+        _, faces = load_obj(path)
 
-    # 新しい平均メッシュを作る
-    avg_mesh = trimesh.Trimesh(vertices=avg_vertices, faces=faces, process=False)
-    return avg_mesh
+        if faces != reference_faces:
+            raise ValueError(
+                f"{filename} の面情報が一致しません。\n"
+               "同一トポロジーかつ同一頂点順序のOBJのみ使用してください。"
+            )
 
-def save_mesh(mesh, output_dir, filename):
-    """平均メッシュを OBJ として保存"""
-    os.makedirs(output_dir, exist_ok=True)
-    path = os.path.join(output_dir, filename)
-    mesh.export(path)
-    print(f"平均形状を保存しました: {path}")
+
+def compute_average_vertices(meshes):
+    """
+    頂点位置平均
+    """
+
+    stacked = np.stack(meshes, axis=0)
+
+    return np.mean(stacked, axis=0)
+
+
+def save_average_obj(avg_vertices, face_lines, output_path):
+    """
+    OBJ保存
+    face情報は元OBJをそのまま保持
+    """
+
+    with open(output_path, "w", encoding="utf-8") as f:
+
+        f.write("# MeshVertexAverager v1.1.0\n")
+        f.write("# Averaged mesh\n\n")
+
+        for v in avg_vertices:
+            f.write(
+                f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n"
+            )
+
+        f.write("\n")
+
+        for face in face_lines:
+            f.write(face + "\n")
+
 
 def main():
-    print("MeshVertexAverager v1.0")
+
+    print("MeshVertexAverager v1.1.0")
     print("Creating averaged mesh...")
 
-    meshes = load_meshes(INPUT_DIR)
+    meshes, face_lines = load_meshes(INPUT_DIR)
 
     if len(meshes) == 0:
         print("input_meshes に OBJ がありません。")
         return
 
-    faces_ref = meshes[0].faces
+    validate_meshes(
+        meshes,
+        face_lines,
+        INPUT_DIR
+    )
 
-    for mesh in meshes[1:]:
-        if not np.array_equal(mesh.faces, faces_ref):
-            raise ValueError(
-                "面情報が一致しません。同一トポロジーのメッシュのみ使用できます。"
-            )
+    avg_vertices = compute_average_vertices(meshes)
 
-    avg_mesh = compute_average_mesh(meshes)
-    save_mesh(avg_mesh, OUTPUT_DIR, OUTPUT_FILE)
+    os.makedirs(
+        OUTPUT_DIR,
+        exist_ok=True
+    )
 
-    print("処理完了！平均形状ができました。")
+    output_path = os.path.join(
+        OUTPUT_DIR,
+        OUTPUT_FILE
+    )
+
+    save_average_obj(
+        avg_vertices,
+        face_lines,
+        output_path
+    )
+
+    print()
+    print("処理完了！")
+    print(f"保存先: {output_path}")
+
 
 if __name__ == "__main__":
     main()
